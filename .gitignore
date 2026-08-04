@@ -1,0 +1,6 @@
+bin/
+vendor/
+*.jwt
+*.json.identity
+.idea/
+.vscode/
