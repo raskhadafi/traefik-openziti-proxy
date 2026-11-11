@@ -1,6 +1,4 @@
-bin/
-vendor/
 *.jwt
-*.json.identity
-.idea/
-.vscode/
+identity*.json
+/sidecar/sidecar
+/sidecar/traefik-openziti-sidecar
