@@ -1,0 +1,14 @@
+http:
+  routers:
+    test-ch:
+      rule: Host(`test.ch`)
+      entryPoints: [websecure]        # :443
+      tls: {}
+      middlewares: [to-ziti]
+      service: noop@internal
+  middlewares:
+    to-ziti:
+      plugin:
+        openziti:
+          service: my-service
+          sidecarAddress: http://ziti-sidecar:8900

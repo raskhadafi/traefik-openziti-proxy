@@ -1,0 +1,30 @@
+# Run from the examples/ directory: docker compose up --build
+# Put the one-time enrollment JWT in ./identity.jwt (it is git-ignored).
+services:
+  traefik:
+    image: traefik:v3
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ..:/plugins-local/src/github.com/raskhadafi/traefik-openziti-proxy:ro
+    depends_on:
+      - ziti-sidecar
+
+  ziti-sidecar:
+    build: ../sidecar
+    command:
+      - --listen=0.0.0.0:8900
+      - --identity-file=/ziti/identity.json
+      - --jwt-file=/run/secrets/identity.jwt
+      - --allowed-services=my-service
+    volumes:
+      - ziti-identity:/ziti
+      - ./identity.jwt:/run/secrets/identity.jwt:ro
+    restart: unless-stopped
+    # No published ports: only Traefik on the compose network can reach it.
+
+volumes:
+  ziti-identity:
