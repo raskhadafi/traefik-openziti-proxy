@@ -1,11 +1,13 @@
-# Run from the examples/ directory: docker compose up --build
+# Run from the examples/ directory: podman compose up --build
 # Put the one-time enrollment JWT in ./identity.jwt (it is git-ignored).
+# Rootless podman cannot publish ports below 1024 by default, so the example
+# publishes 8080/8443. On SELinux hosts append ",z" to the bind mounts.
 services:
   traefik:
-    image: traefik:v3
+    image: docker.io/library/traefik:v3
     ports:
-      - "80:80"
-      - "443:443"
+      - "8080:80"
+      - "8443:443"
     volumes:
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
@@ -14,7 +16,9 @@ services:
       - ziti-sidecar
 
   ziti-sidecar:
-    build: ../sidecar
+    build:
+      context: ../sidecar
+      dockerfile: Containerfile
     command:
       - --listen=0.0.0.0:8900
       - --identity-file=/ziti/identity.json

@@ -60,9 +60,15 @@ This project dials a service; it does not create or host one.
 ```sh
 cd examples
 cp /path/to/sidecar.jwt ./identity.jwt      # one-time enrollment JWT (git-ignored)
-# edit dynamic.yml: rule, service name; edit docker-compose.yml: --allowed-services
-docker compose up --build
+# edit dynamic.yml: rule, service name; edit compose.yml: --allowed-services
+podman compose up --build
 ```
+
+The container runtime is podman. `podman compose` needs a compose provider such
+as `podman-compose`. Rootless podman cannot publish ports below 1024 by
+default, so the example publishes Traefik on 8080 and 8443; put a port
+forward in front or lower `net.ipv4.ip_unprivileged_port_start` to use 80 and
+443. On SELinux hosts append `,z` to the bind mounts in `compose.yml`.
 
 The compose file mounts the repository into Traefik at
 `/plugins-local/src/github.com/raskhadafi/traefik-openziti-proxy` (local plugin
@@ -152,6 +158,20 @@ Build and test: `cd sidecar && go build . && go test -race ./...`.
 | Sidecar exits at start | Missing identity and JWT, bad JWT, unreachable controller, or failed authentication. The message names the paths. |
 | Warning `service not dialable` | A name in `--allowed-services` is not visible to the identity yet; grant a Dial policy, no restart needed. |
 | Plugin does not load in Traefik | The repository must be at `/plugins-local/src/github.com/raskhadafi/traefik-openziti-proxy` and `experimental.localPlugins` must be set. |
+
+## Testing
+
+```sh
+go vet ./... && go test -race ./...                      # plugin
+(cd sidecar && go vet ./... && go test -race ./...)      # sidecar
+./test/podman-smoke.sh                                   # containers, needs podman
+```
+
+`test/podman-smoke.sh` builds the sidecar image from `sidecar/Containerfile`,
+then runs Traefik in a podman pod with the plugin and the example configs, with
+a header-echo container in place of the sidecar. It requests `https://test.ch`
+and checks the headers the plugin sent. It does not need an OpenZiti network
+and does not cover enrollment or dialing.
 
 ## License
 

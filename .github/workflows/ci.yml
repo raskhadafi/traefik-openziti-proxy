@@ -32,8 +32,10 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
-  docker:
+  podman:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t traefik-openziti-sidecar sidecar
+      - run: podman --version
+      - name: Build sidecar image and run Traefik smoke test
+        run: ./test/podman-smoke.sh

@@ -35,6 +35,7 @@ Decisions already made by the user. Do not revisit them:
 
 | Topic | Decision |
 |---|---|
+| Container runtime | podman. No Docker in build files, examples, tests or CI. |
 | Architecture | Plugin + sidecar. The OpenZiti SDK is used only in the sidecar. |
 | Direction | The sidecar **dials** a Ziti service. Nothing binds/hosts one. |
 | `test.ch:443` | Matched by Traefik itself (router rule + entrypoint). There is no hostname or port field anywhere in this project's config. |
@@ -84,11 +85,12 @@ sidecar/
   proxy.go                     // handler, transport cache
   identity_test.go
   proxy_test.go
-  Dockerfile
+  Containerfile
+  .containerignore
 examples/
   traefik.yml                  // static config, local-plugin mode
   dynamic.yml                  // router + middleware
-  docker-compose.yml           // Traefik + sidecar
+  compose.yml                  // Traefik + sidecar, run with podman compose
 .github/workflows/ci.yml
 .gitignore
 README.md
@@ -248,7 +250,7 @@ Standard library `log/slog`, text handler, to stderr. One line per event:
 enrollment performed, identity loaded, authenticated, listening address,
 service not dialable, each proxy error. No per-request access log.
 
-### 6.6 Dockerfile
+### 6.6 Containerfile
 
 Multi-stage: `golang` image matching the SDK's Go version builds a static
 binary (`CGO_ENABLED=0`); final stage is distroless static, non-root user,
@@ -284,7 +286,7 @@ experimental:
       moduleName: github.com/raskhadafi/traefik-openziti-proxy
 ```
 
-`examples/docker-compose.yml`: Traefik (repo mounted at
+`examples/compose.yml` (for `podman compose`, fully qualified image names): Traefik (repo mounted at
 `/plugins-local/src/github.com/raskhadafi/traefik-openziti-proxy`) and the
 sidecar built from `sidecar/`, with `--listen 0.0.0.0:8900`, a named volume at
 `/ziti` for the identity file, the JWT mounted read-only, and no published
@@ -302,7 +304,7 @@ use `--allowed-services`, the identity file is a credential); troubleshooting.
 `.gitignore`: `*.jwt`, `identity*.json`, the sidecar binary.
 
 CI (`.github/workflows/ci.yml`): for both modules run `gofmt -l` (must be
-empty), `go vet ./...`, `go test -race ./...`; build the sidecar Docker image.
+empty), `go vet ./...`, `go test -race ./...`; a `podman` job runs `test/podman-smoke.sh`.
 
 ## 8. Tests and acceptance
 
@@ -314,6 +316,13 @@ Plugin (`openziti_test.go`), against an `httptest.Server` acting as sidecar:
 - Unix-socket sidecar address works.
 - Sidecar down gives 502; a sidecar 504 is passed through.
 - `next` is never called.
+
+Container smoke test (`test/podman-smoke.sh`, podman only): builds the sidecar
+image from `sidecar/Containerfile`; runs Traefik in a pod with the plugin and
+the unmodified `examples/traefik.yml` and `examples/dynamic.yml`, with a
+header-echo container standing in for the sidecar; requests
+`https://test.ch` and asserts the control headers, the replaced client
+`X-Ziti-Service` header and an error-free Traefik log.
 
 Sidecar, with a fake `dialer` connecting to an `httptest.Server`:
 
@@ -331,8 +340,8 @@ Done means all of:
 
 1. `gofmt`, `go vet ./...` and `go test -race ./...` pass in both modules.
 2. The newest Traefik v3 release loads the plugin in local-plugin mode with no
-   Yaegi errors in its log, verified by actually running it (Docker image, or
-   the release binary if Docker is unavailable), and a request through Traefik
+   Yaegi errors in its log, verified by actually running it (podman, or
+   the release binary if podman is unavailable), and a request through Traefik
    reaches a stand-in sidecar.
 3. If an OpenZiti network can be started in the environment (for example the
    OpenZiti quickstart container), run one real enrollment and one end-to-end
@@ -349,7 +358,7 @@ Done means all of:
    Yaegi rejects the plugin, fix the plugin code; that is the only part that
    must be interpreter-compatible.
 3. Sidecar module: identity, proxy, main, tests.
-4. Dockerfile, examples, CI, README, LICENSE.
+4. Containerfile, examples, podman smoke test, CI, README, LICENSE.
 5. End-to-end check (acceptance item 3), then commit, push and report.
 
 ## 10. Rules
