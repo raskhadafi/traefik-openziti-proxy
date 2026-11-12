@@ -1,0 +1,7 @@
+displayName: OpenZiti Proxy
+type: middleware
+import: github.com/raskhadafi/traefik-openziti-proxy
+summary: Forwards HTTP requests into an OpenZiti network through a companion sidecar that dials a Ziti service.
+testData:
+  service: my-service
+  sidecarAddress: http://127.0.0.1:8900

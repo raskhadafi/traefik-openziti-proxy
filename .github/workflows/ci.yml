@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  sidecar:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  podman:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: podman --version
+      - name: Build sidecar image and run Traefik smoke test
+        run: ./test/podman-smoke.sh
+
+  publish:
+    # Publishes the sidecar image to ghcr.io after all checks pass.
+    #   feature branches -> :dev
+    #   master           -> :latest
+    #   tags v1.2.3      -> :1.2.3
+    # Pull requests do not publish.
+    if: github.event_name == 'push'
+    needs: [plugin, sidecar, podman]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute image name and tag
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            case "$REF_NAME" in
+              v[0-9]*) tag="${REF_NAME#v}" ;;
+              *) echo "tag $REF_NAME is not a version tag, nothing to publish"; exit 0 ;;
+            esac
+          elif [ "$REF_NAME" = "$DEFAULT_BRANCH" ]; then
+            tag=latest
+          else
+            tag=dev
+          fi
+          echo "image=ghcr.io/${OWNER,,}/traefik-openziti-sidecar:$tag" >> "$GITHUB_OUTPUT"
+      - name: Build
+        if: steps.meta.outputs.image != ''
+        run: |
+          podman build \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "${{ steps.meta.outputs.image }}" \
+            -f sidecar/Containerfile sidecar
+      - name: Push
+        if: steps.meta.outputs.image != ''
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          podman push "${{ steps.meta.outputs.image }}"
