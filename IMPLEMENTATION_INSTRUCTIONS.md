@@ -15,9 +15,9 @@ live in this repository:
 
 ```
 browser (no Ziti software)
-   │  https://test.ch:443
+   │  http://service.ziti (:80) or https://service.ziti:443
    ▼
-Traefik entrypoint :443, router rule Host(`test.ch`), TLS terminated by Traefik
+Traefik entrypoints :80 and :443 (TLS terminated by Traefik on :443), router rule Host(`service.ziti`)
    │
    ▼
 plugin (middleware)  ── plain HTTP, header X-Ziti-Service: my-service ──►  sidecar
@@ -38,7 +38,7 @@ Decisions already made by the user. Do not revisit them:
 | Container runtime | podman. No Docker in build files, examples, tests or CI. |
 | Architecture | Plugin + sidecar. The OpenZiti SDK is used only in the sidecar. |
 | Direction | The sidecar **dials** a Ziti service. Nothing binds/hosts one. |
-| `test.ch:443` | Matched by Traefik itself (router rule + entrypoint). There is no hostname or port field anywhere in this project's config. |
+| `service.ziti:443` | Matched by Traefik itself (router rule + entrypoint). There is no hostname or port field anywhere in this project's config. |
 | host.v1 | Lives on the hosting side of the Ziti service. This project does not read or create it. |
 | Enrollment | JWT is read from a file. The enrolled identity is persisted to a file and reused on restart. |
 
@@ -263,8 +263,13 @@ binary (`CGO_ENABLED=0`); final stage is distroless static, non-root user,
 ```yaml
 http:
   routers:
-    test-ch:
-      rule: Host(`test.ch`)
+    service-ziti:
+      rule: Host(`service.ziti`)
+      entryPoints: [web]              # :80
+      middlewares: [to-ziti]
+      service: noop@internal
+    service-ziti-tls:
+      rule: Host(`service.ziti`)
       entryPoints: [websecure]        # :443
       tls: {}
       middlewares: [to-ziti]
@@ -321,7 +326,7 @@ Container smoke test (`test/podman-smoke.sh`, podman only): builds the sidecar
 image from `sidecar/Containerfile`; runs Traefik in a pod with the plugin and
 the unmodified `examples/traefik.yml` and `examples/dynamic.yml`, with a
 header-echo container standing in for the sidecar; requests
-`https://test.ch` and asserts the control headers, the replaced client
+`http://service.ziti` and `https://service.ziti` and asserts the control headers, the replaced client
 `X-Ziti-Service` header and an error-free Traefik log.
 
 Sidecar, with a fake `dialer` connecting to an `httptest.Server`:

@@ -85,7 +85,7 @@ func TestHeadersAndPassthrough(t *testing.T) {
 	cfg.UpstreamHost = "internal.example"
 	h := mustNew(t, cfg)
 
-	req := httptest.NewRequest("POST", "http://test.ch/a/b?x=1&y=2", strings.NewReader("payload"))
+	req := httptest.NewRequest("POST", "http://service.ziti/a/b?x=1&y=2", strings.NewReader("payload"))
 	req.RemoteAddr = "203.0.113.9:5555"
 	req.Header.Set("X-Ziti-Service", "evil")
 	req.Header.Set("x-ziti-other", "evil")
@@ -96,7 +96,7 @@ func TestHeadersAndPassthrough(t *testing.T) {
 	if rec.Code != 200 || rec.Body.String() != "from-sidecar" {
 		t.Fatalf("unexpected response %d %q", rec.Code, rec.Body.String())
 	}
-	if s.host != "test.ch" {
+	if s.host != "service.ziti" {
 		t.Errorf("host = %q", s.host)
 	}
 	if s.method != "POST" || s.path != "/a/b" || s.query != "x=1&y=2" || s.body != "payload" {
@@ -123,7 +123,7 @@ func TestHeadersAndPassthrough(t *testing.T) {
 	if got := s.header.Get("X-Forwarded-Proto"); got != "http" {
 		t.Errorf("X-Forwarded-Proto = %q", got)
 	}
-	if got := s.header.Get("X-Forwarded-Host"); got != "test.ch" {
+	if got := s.header.Get("X-Forwarded-Host"); got != "service.ziti" {
 		t.Errorf("X-Forwarded-Host = %q", got)
 	}
 }
@@ -134,7 +134,7 @@ func TestClientUpstreamHostRemovedWhenNotConfigured(t *testing.T) {
 	cfg.Service = "svc"
 	cfg.SidecarAddress = srv.URL
 	h := mustNew(t, cfg)
-	req := httptest.NewRequest("GET", "http://test.ch/", nil)
+	req := httptest.NewRequest("GET", "http://service.ziti/", nil)
 	req.Header.Set("X-Ziti-Upstream-Host", "attacker")
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if s.header.Get("X-Ziti-Upstream-Host") != "" {
@@ -151,7 +151,7 @@ func TestForwardedProtoTLS(t *testing.T) {
 	cfg.Service = "svc"
 	cfg.SidecarAddress = srv.URL
 	h := mustNew(t, cfg)
-	req := httptest.NewRequest("GET", "https://test.ch/", nil)
+	req := httptest.NewRequest("GET", "https://service.ziti/", nil)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if got := s.header.Get("X-Forwarded-Proto"); got != "https" {
 		t.Errorf("X-Forwarded-Proto = %q", got)
@@ -182,7 +182,7 @@ func TestUnixSocketSidecar(t *testing.T) {
 	cfg.SidecarAddress = "unix://" + sock
 	h := mustNew(t, cfg)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://test.ch/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://service.ziti/", nil))
 	if rec.Body.String() != "unix-ok" || got.Get("X-Ziti-Service") != "svc" {
 		t.Fatalf("unexpected: %d %q %v", rec.Code, rec.Body.String(), got)
 	}
@@ -202,7 +202,7 @@ func TestSidecarDownGives502(t *testing.T) {
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(os.Stderr)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://test.ch/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://service.ziti/", nil))
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d", rec.Code)
 	}
@@ -218,7 +218,7 @@ func TestSidecar504PassedThrough(t *testing.T) {
 	cfg.SidecarAddress = srv.URL
 	h := mustNew(t, cfg)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://test.ch/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://service.ziti/", nil))
 	if rec.Code != 504 || rec.Body.String() != "from-sidecar" {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}

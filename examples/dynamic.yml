@@ -1,7 +1,12 @@
 http:
   routers:
-    test-ch:
-      rule: Host(`test.ch`)
+    service-ziti:
+      rule: Host(`service.ziti`)
+      entryPoints: [web]              # :80
+      middlewares: [to-ziti]
+      service: noop@internal
+    service-ziti-tls:
+      rule: Host(`service.ziti`)
       entryPoints: [websecure]        # :443
       tls: {}
       middlewares: [to-ziti]

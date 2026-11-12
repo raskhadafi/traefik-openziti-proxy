@@ -7,9 +7,9 @@ overlay network. Browsers need no Ziti software.
 
 ```
 browser (no Ziti software)
-   │  https://test.ch:443
+   │  http://service.ziti (:80) or https://service.ziti:443
    ▼
-Traefik entrypoint :443, router rule Host(`test.ch`), TLS terminated by Traefik
+Traefik entrypoints :80 and :443 (TLS terminated by Traefik on :443), router rule Host(`service.ziti`)
    │
    ▼
 plugin (middleware)  ── plain HTTP, header X-Ziti-Service: my-service ──►  sidecar
@@ -32,7 +32,7 @@ Two parts live in this repository:
 - **Sidecar** (`sidecar/`): a standalone Go binary that holds the Ziti identity,
   completes enrollment, connects to the Ziti network and dials services.
 
-Hostname and port matching (`test.ch`, `:443`) is done by Traefik itself with a
+Hostname and port matching (`service.ziti`, `:443`) is done by Traefik itself with a
 router rule and an entrypoint. Nothing in this project's config names a host or port.
 
 ## Why a sidecar
@@ -177,8 +177,8 @@ go vet ./... && go test -race ./...                      # plugin
 
 `test/podman-smoke.sh` builds the sidecar image from `sidecar/Containerfile`,
 then runs Traefik in a podman pod with the plugin and the example configs, with
-a header-echo container in place of the sidecar. It requests `https://test.ch`
-and checks the headers the plugin sent. It does not need an OpenZiti network
+a header-echo container in place of the sidecar. It requests `http://service.ziti`
+and `https://service.ziti` and checks the headers the plugin sent. It does not need an OpenZiti network
 and does not cover enrollment or dialing.
 
 ## License

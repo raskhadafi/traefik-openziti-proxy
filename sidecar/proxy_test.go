@@ -108,7 +108,7 @@ func TestGetAndPostRoundTrip(t *testing.T) {
 	fd := &fakeDialer{addr: ds.Listener.Addr().String()}
 	srv := serve(t, newHandler(fd, nil, time.Second))
 
-	resp, body := do(t, srv, "GET", "/a/b?x=1&y=%2F", "", map[string]string{"X-Ziti-Service": "svc", "Host": "test.ch"})
+	resp, body := do(t, srv, "GET", "/a/b?x=1&y=%2F", "", map[string]string{"X-Ziti-Service": "svc", "Host": "service.ziti"})
 	if resp.StatusCode != 200 || body != "dest-ok" {
 		t.Fatalf("%d %q", resp.StatusCode, body)
 	}
@@ -134,7 +134,7 @@ func TestControlHeadersStrippedForwardedKept(t *testing.T) {
 		"X-Ziti-Whatever":        "1",
 		"X-Forwarded-For":        "203.0.113.9",
 		"X-Forwarded-Proto":      "https",
-		"X-Forwarded-Host":       "test.ch",
+		"X-Forwarded-Host":       "service.ziti",
 	})
 	for k := range d.Header {
 		if strings.HasPrefix(strings.ToLower(k), "x-ziti-") {
@@ -145,7 +145,7 @@ func TestControlHeadersStrippedForwardedKept(t *testing.T) {
 	if got := d.Header.Values("X-Forwarded-For"); len(got) != 1 || got[0] != "203.0.113.9" {
 		t.Errorf("X-Forwarded-For = %v", got)
 	}
-	if d.Header.Get("X-Forwarded-Proto") != "https" || d.Header.Get("X-Forwarded-Host") != "test.ch" {
+	if d.Header.Get("X-Forwarded-Proto") != "https" || d.Header.Get("X-Forwarded-Host") != "service.ziti" {
 		t.Errorf("forwarded headers changed: %v", d.Header)
 	}
 }
@@ -154,11 +154,11 @@ func TestHostHeader(t *testing.T) {
 	ds, d := startDest(t, false)
 	srv := serve(t, newHandler(&fakeDialer{addr: ds.Listener.Addr().String()}, nil, time.Second))
 
-	do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "Host": "test.ch"})
-	if d.Host != "test.ch" {
+	do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "Host": "service.ziti"})
+	if d.Host != "service.ziti" {
 		t.Errorf("incoming host not preserved: %q", d.Host)
 	}
-	do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "Host": "test.ch", "X-Ziti-Upstream-Host": "backend.internal:8080"})
+	do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "Host": "service.ziti", "X-Ziti-Upstream-Host": "backend.internal:8080"})
 	if d.Host != "backend.internal:8080" {
 		t.Errorf("override not applied: %q", d.Host)
 	}
@@ -170,7 +170,7 @@ func TestHTTPSUpstream(t *testing.T) {
 
 	// Self-signed certificate: rejected when verification is on.
 	srv := serve(t, newProxyHandler(fd, nil, time.Second, false, func() bool { return true }))
-	resp, _ := do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "X-Ziti-Upstream-Scheme": "https", "Host": "test.ch"})
+	resp, _ := do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "X-Ziti-Upstream-Scheme": "https", "Host": "service.ziti"})
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("untrusted cert: status %d, want 502", resp.StatusCode)
 	}
@@ -313,7 +313,7 @@ func TestWebSocketThroughSidecar(t *testing.T) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: test.ch\r\nX-Ziti-Service: svc\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+	fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: service.ziti\r\nX-Ziti-Service: svc\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, nil)
 	if err != nil || resp.StatusCode != 101 {
@@ -398,7 +398,7 @@ func TestWebSocketThroughPluginAndSidecar(t *testing.T) {
 	addr, err := bufio.NewReader(stdout).ReadString('\n')
 	must(err)
 
-	upgradeRoundTrip(t, strings.TrimSpace(addr), "test.ch")
+	upgradeRoundTrip(t, strings.TrimSpace(addr), "service.ziti")
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
 	if len(fd.services) == 0 || fd.services[0] != "ws-svc" {
