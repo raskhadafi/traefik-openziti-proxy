@@ -159,6 +159,14 @@ Build and test: `cd sidecar && go build . && go test -race ./...`.
 | Warning `service not dialable` | A name in `--allowed-services` is not visible to the identity yet; grant a Dial policy, no restart needed. |
 | Plugin does not load in Traefik | The repository must be at `/plugins-local/src/github.com/raskhadafi/traefik-openziti-proxy` and `experimental.localPlugins` must be set. |
 
+## Container image
+
+CI publishes the sidecar image to `ghcr.io/raskhadafi/traefik-openziti-sidecar`
+after the checks pass: tag `dev` for pushes to feature branches, `latest` for
+`master`, and the version number for git tags such as `v1.2.3`. Pull requests
+do not publish. The `dev` tag is overwritten by the most recent push to any
+feature branch.
+
 ## Testing
 
 ```sh
