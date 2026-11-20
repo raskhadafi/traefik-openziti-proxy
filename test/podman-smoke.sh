@@ -18,6 +18,9 @@
 #
 # SMOKE_HTTP_PORT and SMOKE_HTTPS_PORT choose the host ports on 127.0.0.1
 # (default 18080 and 18443).
+#
+# TRAEFIK_USER sets the user the Traefik container runs as (default 65534:65534,
+# nobody), so the test also covers a non-root Traefik binding :80 and :443.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,11 +53,16 @@ fi
 grep -q "identity-file" <<<"$out" || fail "unexpected sidecar output: $out"
 
 echo "== start pod"
+# The sysctl lets a non-root Traefik bind :80 and :443 inside the pod. Traefik
+# may run as non-root (for example with podman userns=keep-id), and unprivileged
+# processes cannot bind ports below 1024 unless this is lowered. It is per
+# network namespace, so it does not change the host.
 podman pod create --name "$pod" \
   -p "127.0.0.1:$http_port:80" -p "127.0.0.1:$https_port:443" \
+  --sysctl net.ipv4.ip_unprivileged_port_start=0 \
   --add-host ziti-sidecar:127.0.0.1 >/dev/null
 podman run -d --pod "$pod" --name "$pod-sidecar" "$echo_image" --port 8900 >/dev/null
-podman run -d --pod "$pod" --name "$pod-traefik" \
+podman run -d --pod "$pod" --name "$pod-traefik" --user "${TRAEFIK_USER:-65534:65534}" \
   -v "$repo/examples/traefik.yml:/etc/traefik/traefik.yml:ro" \
   -v "$repo/examples/dynamic.yml:/etc/traefik/dynamic.yml:ro" \
   -v "$repo:/plugins-local/src/$module:ro" \

@@ -158,6 +158,7 @@ Build and test: `cd sidecar && go build . && go test -race ./...`.
 | Sidecar exits at start | Missing identity and JWT, bad JWT, unreachable controller, or failed authentication. The message names the paths. |
 | Warning `service not dialable` | A name in `--allowed-services` is not visible to the identity yet; grant a Dial policy, no restart needed. |
 | Plugin does not load in Traefik | The repository must be at `/plugins-local/src/github.com/raskhadafi/traefik-openziti-proxy` and `experimental.localPlugins` must be set. |
+| `listen tcp :80: bind: permission denied` | Traefik runs as non-root inside the container (for example podman with `userns=keep-id`), and non-root processes cannot bind ports below 1024. The smoke test and the compose example set `net.ipv4.ip_unprivileged_port_start=0` for the pod or container. For a hand-written `podman run`, add `--sysctl net.ipv4.ip_unprivileged_port_start=0`. |
 
 ## Container image
 
