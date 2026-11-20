@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -108,6 +109,38 @@ func (z zitiDialer) DialContext(ctx context.Context, service string) (net.Conn, 
 	return z.ctx.DialContext(ctx, service)
 }
 
+// readyCacheTTL is how long a readiness result is reused for /healthz probes.
+const readyCacheTTL = 5 * time.Second
+
+// readyCache reuses the result of a readiness check for ttl, so frequent
+// health probes do not each cost a controller round trip.
+type readyCache struct {
+	check func() bool
+	ttl   time.Duration
+
+	mu      sync.Mutex
+	checked bool
+	at      time.Time
+	ok      bool
+}
+
+func newReadyCache(check func() bool, ttl time.Duration) *readyCache {
+	return &readyCache{check: check, ttl: ttl}
+}
+
+func (c *readyCache) ready() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	if c.checked && now.Sub(c.at) < c.ttl {
+		return c.ok
+	}
+	c.ok = c.check()
+	c.at = now
+	c.checked = true
+	return c.ok
+}
+
 func warnUndialable(zctx ziti.Context, allowed []string) {
 	if len(allowed) == 0 {
 		return
@@ -155,10 +188,11 @@ func run() error {
 	slog.Info("authenticated")
 	warnUndialable(zctx, cfg.allowed)
 
-	h := newProxyHandler(zitiDialer{zctx}, cfg.allowed, cfg.dialTimeout, cfg.insecureSkip, func() bool {
+	ready := newReadyCache(func() bool {
 		_, err := zctx.GetServices()
 		return err == nil
-	})
+	}, readyCacheTTL)
+	h := newProxyHandler(zitiDialer{zctx}, cfg.allowed, cfg.dialTimeout, cfg.insecureSkip, ready.ready)
 	l, err := listen(cfg.listen)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.listen, err)

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -244,12 +246,140 @@ func TestHealthz(t *testing.T) {
 
 func TestTransportCache(t *testing.T) {
 	h := newHandler(&fakeDialer{}, nil, time.Second)
-	a := h.transport(transportKey{"s", "http", "h"})
-	if a != h.transport(transportKey{"s", "http", "h"}) {
-		t.Error("same key must reuse transport")
+	a := h.transport("s")
+	if a != h.transport("s") {
+		t.Error("same service must reuse transport")
 	}
-	if a == h.transport(transportKey{"s", "http", "h2"}) || a == h.transport(transportKey{"s2", "http", "h"}) || a == h.transport(transportKey{"s", "https", "h"}) {
-		t.Error("different keys must not share a transport")
+	if a == h.transport("s2") {
+		t.Error("different services must not share a transport")
+	}
+}
+
+// Plain-HTTP requests for one service share one transport: sequential requests
+// with different Host headers dial once, and the destination still sees each Host.
+func TestPlainHTTPSharesPoolAcrossHosts(t *testing.T) {
+	ds, d := startDest(t, false)
+	fd := &fakeDialer{addr: ds.Listener.Addr().String()}
+	srv := serve(t, newHandler(fd, nil, time.Second))
+	for _, host := range []string{"a.service.ziti", "b.service.ziti", "c.service.ziti"} {
+		do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "Host": host})
+		if d.Host != host {
+			t.Errorf("destination Host = %q, want %q", d.Host, host)
+		}
+	}
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	if len(fd.services) != 1 {
+		t.Errorf("dials = %d, want 1", len(fd.services))
+	}
+}
+
+// https keeps the TLS server name per upstream host.
+func TestHTTPSSNIPerUpstreamHost(t *testing.T) {
+	var mu sync.Mutex
+	var snis []string
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "dest-ok")
+	}))
+	ts.TLS = &tls.Config{GetConfigForClient: func(hi *tls.ClientHelloInfo) (*tls.Config, error) {
+		mu.Lock()
+		snis = append(snis, hi.ServerName)
+		mu.Unlock()
+		return nil, nil
+	}}
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+
+	fd := &fakeDialer{addr: ts.Listener.Addr().String()}
+	srv := serve(t, newProxyHandler(fd, nil, time.Second, true, func() bool { return true }))
+	for _, up := range []string{"backend-a.internal:8443", "backend-b.internal:8443"} {
+		resp, body := do(t, srv, "GET", "/", "", map[string]string{"X-Ziti-Service": "svc", "X-Ziti-Upstream-Scheme": "https", "X-Ziti-Upstream-Host": up})
+		if resp.StatusCode != 200 || body != "dest-ok" {
+			t.Fatalf("https upstream %s: %d %q", up, resp.StatusCode, body)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(snis, ","); got != "backend-a.internal,backend-b.internal" {
+		t.Errorf("SNI sequence = %q", got)
+	}
+}
+
+func TestTransportMapBounded(t *testing.T) {
+	h := newHandler(&fakeDialer{}, nil, time.Second)
+	n := 0
+	for i := 0; i <= maxTransports; i++ {
+		h.transport(fmt.Sprintf("svc-%d", i))
+		h.mu.Lock()
+		n = len(h.transports)
+		h.mu.Unlock()
+		if n > maxTransports {
+			t.Fatalf("transport map holds %d entries, limit %d", n, maxTransports)
+		}
+	}
+	// The overflowing insert reset the map, leaving only the newest transport.
+	if n != 1 {
+		t.Errorf("entries after overflow = %d, want 1", n)
+	}
+}
+
+// A request cancelled by the client is not an error; a live-context
+// cancellation still is.
+func TestClientCancelNotLoggedAsError(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	h := newHandler(&fakeDialer{}, nil, time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("GET", "http://service.ziti/", nil).WithContext(ctx)
+	req.Header.Set(headerService, "svc")
+	rec := httptest.NewRecorder()
+	h.errorHandler(rec, req, context.Canceled)
+	if rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
+		t.Errorf("client-cancelled request got a body: %q", rec.Body.String())
+	}
+	if strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("client cancellation logged at error level: %s", buf.String())
+	}
+
+	buf.Reset()
+	live := httptest.NewRequest("GET", "http://service.ziti/", nil)
+	live.Header.Set(headerService, "svc")
+	rec = httptest.NewRecorder()
+	h.errorHandler(rec, live, context.Canceled)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("live-context cancellation: status %d, want 502", rec.Code)
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("live-context error not logged at error level: %s", buf.String())
+	}
+}
+
+// Probes within the TTL reuse one controller check; after it expires the
+// next probe checks again.
+func TestHealthzCache(t *testing.T) {
+	var calls atomic.Int32
+	c := newReadyCache(func() bool { calls.Add(1); return true }, time.Hour)
+	srv := serve(t, newProxyHandler(&fakeDialer{}, nil, time.Second, false, c.ready))
+	for i := 0; i < 2; i++ {
+		if r, body := do(t, srv, "GET", "/healthz", "", nil); r.StatusCode != 200 || body != "ok" {
+			t.Fatalf("probe %d: %d %q", i, r.StatusCode, body)
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("checks within TTL = %d, want 1", n)
+	}
+
+	var expired atomic.Int32
+	c2 := newReadyCache(func() bool { expired.Add(1); return true }, time.Millisecond)
+	c2.ready()
+	time.Sleep(5 * time.Millisecond)
+	c2.ready()
+	if n := expired.Load(); n != 2 {
+		t.Fatalf("checks after TTL = %d, want 2", n)
 	}
 }
 

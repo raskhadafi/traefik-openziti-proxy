@@ -20,14 +20,20 @@ const (
 	headerHost     = "X-Ziti-Upstream-Host"
 	controlPrefix  = "X-Ziti-"
 	maxIdlePerHost = 32
+
+	// maxTransports bounds the number of per-service transports kept. It is
+	// only reachable when no service allowlist is configured.
+	maxTransports = 256
+
+	// plainHTTPTarget is the URL host used for plain-HTTP upstream requests.
+	// The dialer ignores the address, so every plain-HTTP request for a
+	// service shares one idle pool regardless of its Host header. The Host
+	// header sent upstream is still the real upstream host.
+	plainHTTPTarget = "ziti-upstream"
 )
 
 type dialer interface {
 	DialContext(ctx context.Context, service string) (net.Conn, error)
-}
-
-type transportKey struct {
-	service, scheme, host string
 }
 
 type proxyHandler struct {
@@ -38,7 +44,7 @@ type proxyHandler struct {
 	ready        func() bool
 
 	mu         sync.Mutex
-	transports map[transportKey]*http.Transport
+	transports map[string]*http.Transport // keyed by Ziti service name
 	rp         *httputil.ReverseProxy
 }
 
@@ -49,7 +55,7 @@ func newProxyHandler(d dialer, allowed []string, dialTimeout time.Duration, inse
 		dialTimeout:  dialTimeout,
 		insecureSkip: insecureSkip,
 		ready:        ready,
-		transports:   map[transportKey]*http.Transport{},
+		transports:   map[string]*http.Transport{},
 	}
 	for _, s := range allowed {
 		if s = strings.TrimSpace(s); s != "" {
@@ -61,6 +67,7 @@ func newProxyHandler(d dialer, allowed []string, dialTimeout time.Duration, inse
 		FlushInterval: -1,
 		Transport:     http.RoundTripper(roundTripperFunc(h.roundTrip)),
 		ErrorHandler:  h.errorHandler,
+		BufferPool:    bufferPool{},
 	}
 	return h
 }
@@ -69,10 +76,26 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// bufferPool reuses the 32 KiB copy buffers of the reverse proxy.
+type bufferPool struct{}
+
+var copyBuffers = sync.Pool{New: func() any {
+	b := make([]byte, 32<<10)
+	return &b
+}}
+
+func (bufferPool) Get() []byte {
+	return *copyBuffers.Get().(*[]byte)
+}
+
+func (bufferPool) Put(b []byte) {
+	copyBuffers.Put(&b)
+}
+
 type ctxKey struct{}
 
 type route struct {
-	key transportKey
+	service, scheme, host string
 }
 
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -106,20 +129,24 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if host == "" {
 		host = r.Host
 	}
-	ctx := context.WithValue(r.Context(), ctxKey{}, route{key: transportKey{service, scheme, host}})
+	ctx := context.WithValue(r.Context(), ctxKey{}, route{service: service, scheme: scheme, host: host})
 	h.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func (h *proxyHandler) rewrite(pr *httputil.ProxyRequest) {
 	rt := pr.In.Context().Value(ctxKey{}).(route)
+	target := rt.host
+	if rt.scheme == "http" {
+		target = plainHTTPTarget
+	}
 	pr.Out.URL = &url.URL{
-		Scheme:   rt.key.scheme,
-		Host:     rt.key.host,
+		Scheme:   rt.scheme,
+		Host:     target,
 		Path:     pr.In.URL.Path,
 		RawPath:  pr.In.URL.RawPath,
 		RawQuery: pr.In.URL.RawQuery,
 	}
-	pr.Out.Host = rt.key.host
+	pr.Out.Host = rt.host
 	// The plugin already set X-Forwarded-*; keep them as they are.
 	for k := range pr.Out.Header {
 		if len(k) >= len(controlPrefix) && strings.EqualFold(k[:len(controlPrefix)], controlPrefix) {
@@ -135,43 +162,49 @@ func (h *proxyHandler) rewrite(pr *httputil.ProxyRequest) {
 
 func (h *proxyHandler) roundTrip(r *http.Request) (*http.Response, error) {
 	rt := r.Context().Value(ctxKey{}).(route)
-	return h.transport(rt.key).RoundTrip(r)
+	return h.transport(rt.service).RoundTrip(r)
 }
 
-func (h *proxyHandler) transport(k transportKey) *http.Transport {
+// transport returns the shared upstream transport for a Ziti service. For
+// https the TLS server name is taken from the request URL host, so each
+// upstream host gets its own connection pool and correct SNI.
+func (h *proxyHandler) transport(service string) *http.Transport {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if t, ok := h.transports[k]; ok {
+	if t, ok := h.transports[service]; ok {
 		return t
+	}
+	if len(h.transports) >= maxTransports {
+		// Idle connections are Ziti circuits; release them before forgetting
+		// the transports. In-flight requests finish on the old transports.
+		for _, t := range h.transports {
+			t.CloseIdleConnections()
+		}
+		h.transports = map[string]*http.Transport{}
 	}
 	t := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			ctx, cancel := context.WithTimeout(ctx, h.dialTimeout)
 			defer cancel()
-			return h.dialer.DialContext(ctx, k.service)
+			return h.dialer.DialContext(ctx, service)
 		},
 		MaxIdleConnsPerHost: maxIdlePerHost,
 		IdleConnTimeout:     90 * time.Second,
-	}
-	if k.scheme == "https" {
-		t.TLSClientConfig = &tls.Config{
-			ServerName:         hostWithoutPort(k.host),
+		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: h.insecureSkip,
-		}
+		},
 	}
-	h.transports[k] = t
+	h.transports[service] = t
 	return t
-}
-
-func hostWithoutPort(h string) string {
-	if host, _, err := net.SplitHostPort(h); err == nil {
-		return host
-	}
-	return strings.Trim(h, "[]")
 }
 
 func (h *proxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	service := r.Header.Get(headerService)
+	if errors.Is(err, context.Canceled) && r.Context().Err() != nil {
+		// The client went away; there is nobody to answer.
+		slog.Debug("client cancelled request", "service", service, "error", err)
+		return
+	}
 	slog.Error("proxy error", "service", service, "error", err)
 	status, msg := http.StatusBadGateway, "Bad Gateway"
 	if errors.Is(err, context.DeadlineExceeded) {
