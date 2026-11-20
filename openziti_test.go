@@ -223,3 +223,42 @@ func TestSidecar504PassedThrough(t *testing.T) {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+// BenchmarkPluginGET sends parallel GET requests through the plugin handler in
+// front of an httptest.Server standing in for the sidecar.
+func BenchmarkPluginGET(b *testing.B) {
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer sidecar.Close()
+	cfg := CreateConfig()
+	cfg.Service = "svc"
+	cfg.SidecarAddress = sidecar.URL
+	h, err := New(context.Background(), http.NotFoundHandler(), cfg, "bench-mw")
+	if err != nil {
+		b.Fatal(err)
+	}
+	front := httptest.NewServer(h)
+	defer front.Close()
+
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 256}}
+	defer client.CloseIdleConnections()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			resp, err := client.Get(front.URL + "/")
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b.Errorf("status %d", resp.StatusCode)
+				return
+			}
+		}
+	})
+}

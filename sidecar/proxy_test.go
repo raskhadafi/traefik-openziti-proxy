@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -404,4 +405,55 @@ func TestWebSocketThroughPluginAndSidecar(t *testing.T) {
 	if len(fd.services) == 0 || fd.services[0] != "ws-svc" {
 		t.Errorf("sidecar dialed %v", fd.services)
 	}
+}
+
+// BenchmarkProxyGET sends parallel GET requests through a real HTTP server in
+// front of the proxy handler. Requests rotate over 8 client Host headers for one
+// Ziti service, so the number of upstream transports and dials is visible.
+func BenchmarkProxyGET(b *testing.B) {
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("dest-ok"))
+	}))
+	defer dest.Close()
+	fd := &fakeDialer{addr: dest.Listener.Addr().String()}
+	front := httptest.NewServer(newHandler(fd, nil, 5*time.Second))
+	defer front.Close()
+
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 256}}
+	defer client.CloseIdleConnections()
+	hosts := make([]string, 8)
+	for i := range hosts {
+		hosts[i] = string(rune('a'+i)) + ".service.ziti"
+	}
+
+	var n atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			req, err := http.NewRequest("GET", front.URL+"/", nil)
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			req.Host = hosts[n.Add(1)%uint64(len(hosts))]
+			req.Header.Set(headerService, "svc")
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b.Errorf("status %d", resp.StatusCode)
+				return
+			}
+		}
+	})
+	b.StopTimer()
+	fd.mu.Lock()
+	dials := len(fd.services)
+	fd.mu.Unlock()
+	b.ReportMetric(float64(dials), "dials")
 }
