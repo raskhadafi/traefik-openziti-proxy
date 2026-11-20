@@ -168,6 +168,10 @@ after the checks pass: tag `dev` for pushes to feature branches, `latest` for
 do not publish. The `dev` tag is overwritten by the most recent push to any
 feature branch.
 
+The image is about 17 MB (16.6 MB measured with podman 4.9.3). It is a `scratch`
+image with the static binary, the CA bundle and an empty `/ziti` owned by the
+non-root user `65532:65532`. `test/podman-smoke.sh` prints the exact size.
+
 ## Testing
 
 ```sh

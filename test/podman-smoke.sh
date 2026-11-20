@@ -45,6 +45,8 @@ cleanup
 echo "== build sidecar image"
 # shellcheck disable=SC2086
 podman build -q ${PODMAN_BUILD_ARGS:-} -t "$image" -f "$repo/sidecar/Containerfile" "$repo/sidecar"
+size_bytes="$(podman image inspect --format '{{.Size}}' "$image")"
+echo "== sidecar image size: ${size_bytes} bytes ($(awk -v b="$size_bytes" 'BEGIN { printf "%.1f MB", b / 1000000 }'))"
 
 echo "== sidecar image rejects missing --identity-file"
 if out="$(podman run --rm "$image" 2>&1)"; then

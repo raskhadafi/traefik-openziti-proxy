@@ -253,8 +253,21 @@ service not dialable, each proxy error. No per-request access log.
 ### 6.6 Containerfile
 
 Multi-stage: `golang` image matching the SDK's Go version builds a static
-binary (`CGO_ENABLED=0`); final stage is distroless static, non-root user,
-`ENTRYPOINT` the binary. Build context is the `sidecar/` directory.
+binary (`CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w -buildid="`). The final
+stage is `scratch` and contains only:
+
+- the binary at `/sidecar`;
+- the CA bundle `/etc/ssl/certs/ca-certificates.crt`, copied from the build
+  stage, for https upstreams and system roots;
+- an empty `/ziti` owned by `65532:65532`. Podman copies a mount point's owner
+  into a new named volume on first use, so the `ziti-identity` volume is
+  writable by the non-root sidecar.
+
+`USER 65532:65532` (numeric, because scratch has no `/etc/passwd`),
+`ENTRYPOINT ["/sidecar"]`. Build context is the `sidecar/` directory. The
+sidecar needs no `/tmp`, HOME, passwd or zoneinfo at runtime. Nothing on its
+code path reads them, and the image run confirmed it. Do not switch the base
+back to distroless without a reason.
 
 ## 7. Examples and README
 
