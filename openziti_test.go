@@ -262,3 +262,40 @@ func BenchmarkPluginGET(b *testing.B) {
 		}
 	})
 }
+
+func transportOf(t *testing.T, h http.Handler) *http.Transport {
+	t.Helper()
+	tr, ok := h.(*handler).proxy.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("proxy transport is not an *http.Transport")
+	}
+	return tr
+}
+
+// Routers and reloads create many handlers; those for one sidecar address
+// share a transport, and a different address gets its own.
+func TestTransportSharedPerSidecarAddress(t *testing.T) {
+	srv, _ := newSidecar(t, 200)
+	cfg := CreateConfig()
+	cfg.Service = "svc"
+	cfg.SidecarAddress = srv.URL
+	a := transportOf(t, mustNew(t, cfg))
+	if b := transportOf(t, mustNew(t, cfg)); a != b {
+		t.Error("same sidecar address must share a transport")
+	}
+
+	cfg2 := CreateConfig()
+	cfg2.Service = "other"
+	cfg2.SidecarAddress = srv.URL + "/"
+	if b := transportOf(t, mustNew(t, cfg2)); a != b {
+		t.Error("trailing slash must normalise to the same sidecar address")
+	}
+
+	srv2, _ := newSidecar(t, 200)
+	cfg3 := CreateConfig()
+	cfg3.Service = "svc"
+	cfg3.SidecarAddress = srv2.URL
+	if b := transportOf(t, mustNew(t, cfg3)); a == b {
+		t.Error("different sidecar addresses must not share a transport")
+	}
+}

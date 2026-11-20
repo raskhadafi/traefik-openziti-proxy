@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,6 +45,29 @@ type handler struct {
 	proxy *httputil.ReverseProxy
 }
 
+// sharedTransports holds one transport per normalised sidecar address. Traefik
+// calls New for every router and again on each configuration reload, so
+// sharing keeps idle sidecar connections from piling up.
+var (
+	sharedMu         sync.Mutex
+	sharedTransports = map[string]*http.Transport{}
+)
+
+func sharedTransport(key string, dial func(context.Context, string, string) (net.Conn, error)) *http.Transport {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if t, ok := sharedTransports[key]; ok {
+		return t
+	}
+	t := &http.Transport{
+		DialContext:         dial,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	sharedTransports[key] = t
+	return t
+}
+
 // New creates the middleware. It never contacts the sidecar.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	if config == nil {
@@ -64,17 +88,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		addr = defaultSidecarAddress
 	}
 
-	transport := &http.Transport{
-		MaxIdleConnsPerHost: 32,
-		IdleConnTimeout:     90 * time.Second,
-	}
 	var target *url.URL
+	var key string
+	var dial func(context.Context, string, string) (net.Conn, error)
 	if strings.HasPrefix(addr, "unix://") {
 		path := strings.TrimPrefix(addr, "unix://")
 		if !strings.HasPrefix(path, "/") || len(path) < 2 {
 			return nil, fmt.Errorf("openziti middleware %q: sidecarAddress %q: unix address must be unix:///absolute/path", name, addr)
 		}
-		transport.DialContext = func(c context.Context, _, _ string) (net.Conn, error) {
+		key = addr
+		dial = func(c context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(c, "unix", path)
 		}
@@ -87,8 +110,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		if u.Scheme != "http" || u.Hostname() == "" || u.Port() == "" || (u.Path != "" && u.Path != "/") {
 			return nil, fmt.Errorf("openziti middleware %q: sidecarAddress %q must be http://host:port or unix:///absolute/path", name, addr)
 		}
+		key = "http://" + u.Host
 		target = &url.URL{Scheme: "http", Host: u.Host}
 	}
+	transport := sharedTransport(key, dial)
 
 	service := config.Service
 	upstreamHost := config.UpstreamHost
