@@ -1,0 +1,19 @@
+FROM docker.io/library/golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+# -buildid= makes the output deterministic and drops the build ID note.
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o /out/sidecar . \
+    && mkdir /out/ziti
+
+# Final image: the binary, the CA bundle for https upstreams, and an empty
+# /ziti owned by the non-root user so a new named volume mounted there is
+# writable (podman copies the mount point's owner into the volume).
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/sidecar /sidecar
+COPY --from=build --chown=65532:65532 /out/ziti /ziti
+USER 65532:65532
+ENTRYPOINT ["/sidecar"]
